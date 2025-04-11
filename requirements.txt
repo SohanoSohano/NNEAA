@@ -1,0 +1,32 @@
+# Core Python Libraries
+numpy==1.26.0
+pandas==2.1.0
+
+# Machine Learning and NLP Frameworks
+torch==2.0.1
+transformers==4.30.0
+sentence-transformers==2.2.2
+
+# Vector Database and Retrieval Augmented Generation (RAG)
+faiss-cpu==1.7.4
+llama-index==0.7.0
+chromadb==0.4.3
+
+# Web and Desktop UI Frameworks
+streamlit==1.25.0
+pyqt6==6.5.0
+
+# Scraping and File Handling Tools
+arxiv==1.4.0
+beautifulsoup4==4.12.2
+
+# Utility Libraries
+tqdm==4.66.0
+requests==2.31.0
+
+# Optional Dependencies for Debugging and Monitoring
+pytest==7.4.0
+prometheus-client==0.16.0
+
+# Dependency Management Tools (Optional)
+pipreqs==0.4.11
