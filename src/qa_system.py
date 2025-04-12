@@ -4,113 +4,138 @@
 from src.rag_pipeline import load_faiss_index
 # Core LlamaIndex imports
 from llama_index.core import Settings, PromptTemplate
+from llama_index.core.memory import ChatMemoryBuffer
+from llama_index.core.chat_engine import CondenseQuestionChatEngine, ContextChatEngine # Or other chat engine types
+
 # Embedding and LLM imports
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.huggingface import HuggingFaceLLM
 # Standard library
 import logging
 import torch
-# Optional: Keep import if you might try quantization later
-# from transformers import BitsAndBytesConfig
+# Rich for formatted printing
+from rich.console import Console
+from rich.markdown import Markdown
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logging.getLogger().setLevel(logging.INFO) # Ensure root logger level
+# Configure logging (set higher level to reduce noise during chat)
+logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
+# Set specific loggers if needed, e.g., llama_index
+# logging.getLogger('llama_index.core').setLevel(logging.INFO)
 
-# --- Configure Global Settings for LlamaIndex ---
+# --- Global Settings (Same as before) ---
 logging.info("Configuring global settings for LlamaIndex...")
-
-# 1. Configure Embedding Model (Keep as is)
 Settings.embed_model = HuggingFaceEmbedding(
     model_name="sentence-transformers/all-MiniLM-L6-v2"
 )
 logging.info(f"Using embedding model: {Settings.embed_model.model_name}")
 
-# 2. Configure LLM to use Llama 3.2 3B Instruct <<<--- CHANGE HERE
-llm_model_name = "meta-llama/Llama-3.2-1B-Instruct" # <<<--- NEW MODEL
+llm_model_name = "meta-llama/Llama-3.2-1B-Instruct"
 logging.info(f"Setting up LLM: {llm_model_name}")
 
-# --- Define a RAG-specific prompt template (Llama 3 template should work) ---
-query_wrapper_prompt = PromptTemplate(
-    "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"
-    "You are an expert Q&A assistant specialized in neural network architectures. "
-    "Your goal is to answer the user's query accurately based *only* on the provided context information. "
-    "If the context does not contain the information needed to answer the query, "
-    "state that the answer is not found in the context. Do not add information "
-    "that is not present in the context. Keep your answers concise and directly relevant to the query."
-    "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n"
-    "Context information:\n"
-    "---------------------\n"
-    "{context_str}\n"
-    "---------------------\n"
-    "Given the context information and not prior knowledge, answer the query.\n"
-    "Query: {query_str}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+# --- NEW System Prompt for Chat Engine ---
+# Instructing the LLM on conversational behavior, source usage, and follow-ups
+system_prompt = (
+    "You are an expert Q&A assistant specialized in neural network architectures and development. "
+    "Your goal is to answer the user's query accurately and informatively based *only* on the provided context information. "
+    "Follow these guidelines:\n"
+    "1. Base your entire answer *only* on the text provided in the 'Context information' section. Do not use any prior knowledge.\n"
+    "2. If the context doesn't contain the answer, clearly state that the information is not available in the provided documents.\n"
+    "3. If the user's query is ambiguous or lacks detail, ask relevant clarifying follow-up questions before attempting a full answer.\n"
+    "4. When providing information found in the context, try to mention the source document (e.g., filename if available in metadata) that contains the information.\n"
+    "5. Structure answers clearly, using steps or bullet points where appropriate.\n"
+    "6. Keep conversation history in mind for relevant follow-up interactions."
 )
-# ---------------------------------------------------------------------
+# Note: The Llama 3 prompt format might be slightly different for system prompts in chat engines.
+# We'll pass this via the chat engine's system_prompt argument. LlamaIndex handles formatting.
 
-# --- LLM Initialization (Quantization DISABLED by default for 3B model) ---
+# --- LLM Initialization (Quantization Disabled) ---
 logging.info("Initializing LLM (Quantization Disabled).")
-Settings.llm = HuggingFaceLLM(
-    model_name=llm_model_name,
-    tokenizer_name=llm_model_name,
-    query_wrapper_prompt=query_wrapper_prompt,
-    context_window=131072, # Llama 3.2 3B also supports 128k context
-    max_new_tokens=512, # Keep reasonably high, adjust if needed
-    model_kwargs={
-        # Removed quantization_config
-        # Removed torch_dtype=torch.float16 - let transformers decide best default
-        # (often float32 on CPU/low VRAM, float16 on sufficient VRAM)
-    },
-    generate_kwargs={
-        "temperature": 0.7,
-        "do_sample": True,
-    },
-    device_map="auto", # Automatically use GPU if possible
-)
-logging.info(f"LLM '{llm_model_name}' configured successfully (No Quantization).")
-# -------------------------------------------------
+try:
+    Settings.llm = HuggingFaceLLM(
+        model_name=llm_model_name,
+        tokenizer_name=llm_model_name,
+        # query_wrapper_prompt is less relevant for chat engine, system_prompt is key
+        context_window=131072,
+        max_new_tokens=512,
+        model_kwargs={},
+        generate_kwargs={"temperature": 0.7, "do_sample": True},
+        device_map="auto",
+    )
+    logging.info(f"LLM '{llm_model_name}' configured successfully.")
+except Exception as e:
+    logging.error(f"LLM Initialization Failed: {e}", exc_info=True)
+    Settings.llm = None # Ensure it's None if failed
 
-def answer_nn_question(question: str) -> str:
-    """Loads the index, creates a query engine, and answers a question using the configured LLM."""
-    logging.info(f"Received question: '{question}'")
-
-    logging.info("Loading index...")
-    index = load_faiss_index(persist_dir="storage")
-    if index is None:
-        logging.error("Index loading failed.")
-        return "Error: Could not load the index. Please build it first using rag_pipeline.py."
-    logging.info("Index loaded successfully.")
-
-    logging.info("Creating query engine...")
-    query_engine = index.as_query_engine()
-    logging.info("Query engine ready.")
-
-    logging.info(f"Querying with: '{question}'")
-    try:
-        logging.info("Sending query to LLM...")
-        response = query_engine.query(question)
-        logging.info("LLM processing finished. Received response object.")
-        logging.debug(f"Raw response type: {type(response)}")
-        logging.debug(f"Raw response content: {response}")
-
-        answer_text = str(response.response).strip()
-        # Llama 3.2 likely uses <|eot_id|> too
-        if answer_text.endswith("<|eot_id|>"):
-              answer_text = answer_text[:-len("<|eot_id|>")].strip()
-        logging.info("Successfully processed LLM response.")
-        return answer_text
-    except Exception as e:
-        logging.error(f"An error occurred during querying: {e}", exc_info=True)
-        return f"Error during query: {e}"
-
-# --- Main execution block ---
+# --- Main Chat Loop ---
 if __name__ == "__main__":
-    logging.info("Starting QA System with Llama 3.2 1B LLM...")
-    user_question = input("Ask a question about neural networks (e.g., 'What is ResNet?'): ")
-    if user_question:
-        answer = answer_nn_question(user_question)
-        print("\nSynthesized Answer (Llama 3.2 1B):") # Updated model name here
-        print(answer)
+    if Settings.llm is None:
+        print("\nERROR: LLM failed to initialize. Cannot start chat system.")
     else:
-        print("No question asked.")
+        console = Console() # For rich printing
+        console.print("[bold cyan]Starting Neural Network RAG Chat System...[/bold cyan]")
+        console.print(f"[cyan]Using LLM: {llm_model_name}[/cyan]")
+
+        # Load the index
+        console.print("[cyan]Loading vector index...[/cyan]")
+        index = load_faiss_index(persist_dir="storage")
+
+        if index is None:
+            console.print("[bold red]ERROR: Could not load the index. Please build it first.[/bold red]")
+        else:
+            console.print("[bold green]Index loaded successfully.[/bold green]")
+
+            # Create chat memory
+            memory = ChatMemoryBuffer.from_defaults(token_limit=3900) # Adjust token limit as needed
+
+            # Create chat engine (ContextChatEngine uses context + memory)
+            chat_engine = index.as_chat_engine(
+                chat_mode="context",
+                memory=memory,
+                system_prompt=system_prompt,
+                # Optional: Customize how context is retrieved/used
+                # similarity_top_k=5,
+            )
+            console.print("[bold green]Chat engine ready.[/bold green]")
+            console.print("[cyan]Type 'exit' or 'quit' to end the chat.[/cyan]\n")
+
+            # Start conversation loop
+            while True:
+                try:
+                    user_input = input("You: ")
+                    if user_input.lower() in ["exit", "quit"]:
+                        console.print("[bold cyan]Exiting chat. Goodbye![/bold cyan]")
+                        break
+                    if not user_input:
+                        continue
+
+                    console.print(f"[grey50]Processing using {llm_model_name}...[/grey50]", end='\r')
+                    # Use chat engine's stream_chat for interactive feel, or chat for blocking
+                    # response = chat_engine.chat(user_input) # Blocking call
+
+                    # Streaming call - prints tokens as they are generated
+                    streaming_response = chat_engine.stream_chat(user_input)
+                    full_response_text = ""
+                    console.print(f"[bold green]Assistant:[/bold green] ", end="")
+                    for token in streaming_response.response_gen:
+                        print(token, end="", flush=True)
+                        full_response_text += token
+                    print("\n") # Newline after streaming finishes
+
+                    # Process source nodes after response is complete
+                    source_nodes = streaming_response.source_nodes
+                    if source_nodes:
+                        console.print("\n[bold yellow]Sources Used:[/bold yellow]")
+                        seen_files = set()
+                        for i, node in enumerate(source_nodes):
+                             # Attempt to get filename from metadata
+                             file_name = node.metadata.get('file_name', f'Source {i+1}')
+                             if file_name not in seen_files:
+                                 # Optionally print score: score = node.get_score()
+                                 console.print(f"- {file_name}")
+                                 seen_files.add(file_name)
+                        print("") # Add spacing
+
+                except Exception as e:
+                    logging.error(f"An error occurred during chat: {e}", exc_info=True)
+                    console.print(f"[bold red]Error: {e}[/bold red]")
 
