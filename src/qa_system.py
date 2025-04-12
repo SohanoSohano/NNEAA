@@ -10,9 +10,12 @@ from llama_index.llms.huggingface import HuggingFaceLLM
 # Standard library
 import logging
 import torch
-from transformers import BitsAndBytesConfig
+# Optional: Keep import if you might try quantization later
+# from transformers import BitsAndBytesConfig
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.getLogger().setLevel(logging.INFO) # Ensure root logger level
 
 # --- Configure Global Settings for LlamaIndex ---
 logging.info("Configuring global settings for LlamaIndex...")
@@ -23,12 +26,11 @@ Settings.embed_model = HuggingFaceEmbedding(
 )
 logging.info(f"Using embedding model: {Settings.embed_model.model_name}")
 
-# 2. Configure LLM to use Llama 3.1 8B Instruct <<< CHANGE HERE
-# llm_model_name = "meta-llama/Meta-Llama-3-8B-Instruct" # Old Llama 3
-llm_model_name = "meta-llama/Meta-Llama-3.1-8B-Instruct" # <<< NEW: Llama 3.1
+# 2. Configure LLM to use Llama 3.2 3B Instruct <<<--- CHANGE HERE
+llm_model_name = "meta-llama/Llama-3.2-1B-Instruct" # <<<--- NEW MODEL
 logging.info(f"Setting up LLM: {llm_model_name}")
 
-# --- Define a RAG-specific prompt template (Keep the Llama 3 template, it's usually compatible) ---
+# --- Define a RAG-specific prompt template (Llama 3 template should work) ---
 query_wrapper_prompt = PromptTemplate(
     "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"
     "You are an expert Q&A assistant specialized in neural network architectures. "
@@ -46,91 +48,69 @@ query_wrapper_prompt = PromptTemplate(
 )
 # ---------------------------------------------------------------------
 
-# Configure 4-bit quantization
-quantization_config = BitsAndBytesConfig(
-   load_in_4bit=True,
-   bnb_4bit_compute_dtype=torch.float16 # Optional: Recommended for faster computation if GPU supports it
-   # You might need other bnb_* args depending on your bitsandbytes version/setup
-)
-logging.info("Using 4-bit quantization configuration.")
-
+# --- LLM Initialization (Quantization DISABLED by default for 3B model) ---
+logging.info("Initializing LLM (Quantization Disabled).")
 Settings.llm = HuggingFaceLLM(
     model_name=llm_model_name,
-    tokenizer_name=llm_model_name, # <<< Use the same name for tokenizer
+    tokenizer_name=llm_model_name,
     query_wrapper_prompt=query_wrapper_prompt,
-    # context_window=8192, # Old Llama 3 context
-    context_window=131072, # <<< NEW: Llama 3.1 supports 128k context (131072 = 128 * 1024)
-    max_new_tokens=50,
+    context_window=131072, # Llama 3.2 3B also supports 128k context
+    max_new_tokens=512, # Keep reasonably high, adjust if needed
     model_kwargs={
-        # --- Quantization for Memory Saving ---
-        #"quantization_config": quantization_config
-        #"load_in_4bit": True,
-        # Comment out above and uncomment below if you prefer float16 and have enough VRAM (>16GB)
-        "torch_dtype": torch.float16
+        # Removed quantization_config
+        # Removed torch_dtype=torch.float16 - let transformers decide best default
+        # (often float32 on CPU/low VRAM, float16 on sufficient VRAM)
     },
     generate_kwargs={
         "temperature": 0.7,
         "do_sample": True,
     },
-    device_map="auto",
+    device_map="auto", # Automatically use GPU if possible
 )
-logging.info("LLM configured successfully. Using Llama 3.1 8B Instruct.")
+logging.info(f"LLM '{llm_model_name}' configured successfully (No Quantization).")
 # -------------------------------------------------
 
-# ... (Keep the rest of the file: answer_nn_question function, if __name__ == "__main__": block) ...
-
-# Make sure the answer cleaning in answer_nn_question still works:
 def answer_nn_question(question: str) -> str:
     """Loads the index, creates a query engine, and answers a question using the configured LLM."""
-
-    # Log the start of the function call
     logging.info(f"Received question: '{question}'")
-    # No need to re-configure Settings here, rely on global config.
 
-    # 1. Load the pre-built index
     logging.info("Loading index...")
     index = load_faiss_index(persist_dir="storage")
-
     if index is None:
         logging.error("Index loading failed.")
         return "Error: Could not load the index. Please build it first using rag_pipeline.py."
     logging.info("Index loaded successfully.")
 
-    # 2. Create a query engine from the index
     logging.info("Creating query engine...")
     query_engine = index.as_query_engine()
     logging.info("Query engine ready.")
 
-    # 3. Query the engine
     logging.info(f"Querying with: '{question}'")
     try:
-        # --- Added Logging ---
-        logging.info("Sending query to LLM...") # Log immediately before the blocking call
+        logging.info("Sending query to LLM...")
         response = query_engine.query(question)
-        logging.info("LLM processing finished. Received response object.") # Log immediately after
-        # Optional: Log raw response details at DEBUG level
+        logging.info("LLM processing finished. Received response object.")
         logging.debug(f"Raw response type: {type(response)}")
         logging.debug(f"Raw response content: {response}")
-        # ---------------------
 
-        # Process the response
         answer_text = str(response.response).strip()
-        # Llama 3.1 also uses <|eot_id|>
+        # Llama 3.2 likely uses <|eot_id|> too
         if answer_text.endswith("<|eot_id|>"):
               answer_text = answer_text[:-len("<|eot_id|>")].strip()
-        logging.info("Successfully processed LLM response.") # Log successful processing
+        logging.info("Successfully processed LLM response.")
         return answer_text
     except Exception as e:
         logging.error(f"An error occurred during querying: {e}", exc_info=True)
         return f"Error during query: {e}"
 
-# --- Main execution block for direct testing (Keep as is) ---
+# --- Main execution block ---
 if __name__ == "__main__":
-    logging.info("Starting QA System with Llama 3.1 LLM...")
+    logging.info("Starting QA System with Llama 3.2 1B LLM...")
     user_question = input("Ask a question about neural networks (e.g., 'What is ResNet?'): ")
     if user_question:
         answer = answer_nn_question(user_question)
-        print("\nSynthesized Answer (Llama 3.1):")
+        print("\nSynthesized Answer (Llama 3.2 1B):") # Updated model name here
         print(answer)
     else:
         print("No question asked.")
+
