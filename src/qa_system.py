@@ -60,7 +60,6 @@ try:
         model_kwargs={}, # No quantization, no specific dtype forced initially
         generate_kwargs={"temperature": 0.7, "do_sample": True},
         device_map="auto",
-        token=hf_token, # Pass token if found in env vars
     )
     logging.info(f"LLM '{LLM_MODEL_NAME}' configured successfully.")
 
